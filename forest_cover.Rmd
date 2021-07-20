@@ -1,0 +1,914 @@
+---
+title: "edx Capstone - Forest Cover Type"
+author: "Saigopal Sathyamurthy"
+date: "20/7/2021"
+output: pdf_document
+fontsize: 10pt
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F, comment = NA, fig.dim = c(6, 4))
+```
+
+```{r loading required libraries & data download, include = F}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(ggridges)) install.packages("ggridges", repos = "http://cran.us.r-project.org")
+if(!require(GGally)) install.packages("GGally", repos = "http://cran.us.r-project.org")
+if(!require(e1071)) install.packages("e1071", repos = "http://cran.us.r-project.org")
+
+library(tidyverse)
+library(data.table)
+library(caret)
+library(knitr)
+library(grid)
+library(ggridges)
+library(GGally)
+library(RColorBrewer)
+library(nnet)
+library(rpart)
+library(e1071)
+
+dl <- tempfile()
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.data.gz", dl)
+dat<- fread(text = readLines(gzfile(description = dl)), sep = ",") 
+rm(dl)
+```
+
+# 1. Introduction
+
+This report is prepared for the edx Data Science: Capstone project - the final course in HarvardX's Data Science Professional Certificate series. Forest Cover Type Data Set available in the UCI Machine Learning Repository was chosen for this assignment (**<https://archive.ics.uci.edu/ml/datasets/covertype>**).
+
+There are many definitions for forest. The most widely used is the one formulated by the Food and Agriculture Organization. Briefly, forest is a land with a ***tree canopy cover*** of more than 10 percent and area of more than 0.5 hectares [1]. Forest cover type information are useful for natural resource managers and policy makers. It helps in reforestation and conservation activities.
+
+The unit of observation in this study was a 30 x 30 m (digital spatial data) raster cells. These were obtained from the US Geological Survey (USGS). Several independent variables were derived from this using Geographic Information System (GIS) based surface analysis and hillshading procedures. The dependent variable (Cover Type) was taken from the US Forest Service (USFS) inventory information which used aerial photography. 
+Study area included four wilderness areas located in the Roosevelt National Forest of northern Colorado. Detailed description of the methods used for deriving the independent variables from raster data can be found in the paper published by the dataset donor [2].
+
+There are `r nrow(dat)` rows/observations and `r ncol(dat)` columns/variables in the dataset. The first five rows and columns are printed below. There are no headers in the data downloaded. There are no missing values.
+
+```{r dataset dimension header and missing values, echo = T}
+dim(dat)
+dat[c(1:5), c(1:5)]
+any(is.na(dat))
+```
+
+Key step performed in this analysis include
+
++ Wrangling data for headers and description of variables
++ Creating new variables and modifying existing variables
++ Splitting of the dataset, Exploratory Data Analysis (EDA) and selection of variable to be included in prediction models
++ Comparison of the performance metric of three machine learning techniques with those reported by the dataset donor (linear discriminant analysis and artificial neural network)
+
+# 2. Methods and Analysis
+
+This section details the variables in the dataset, creating new variable/modifying existing variable, splitting of data, exploratory data analysis and selection of variables to be included in the models.
+
+## 2.1 Variables descritpion and wrangling for headers
+
+Headers are not included in the data. Information about the variables were provided in an info document available in the UCI repository. The names, data type and measurement unit of the variables are printed below. The first 10 variables are named as printed. For this, the **str_split** function was used with white space as pattern and row 1 through 10 of the first column was indexed (See R script for more details).
+
+```{r variable description & wrangling for headers variable 1 to 10}
+dl <- tempfile()
+download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/covtype/covtype.info", dl)
+description_dat<- readLines(gzfile(description = dl, open = "rb"))
+rm(dl)
+variables_desc<- description_dat[174:186] 
+str_trunc(variables_desc, 80, side = "right") 
+header_1_10<- str_split(variables_desc, pattern = "\\s+", simplify = T) 
+header_1_10<- header_1_10[,1][1:10]
+remove(variables_desc)
+```
+
+The four wilderness area in this study were Rawah, Neota, Comanche Peak and Cache la Poudre respectively. These variables are mutually exclusive (one observation can not be present in more than one area) . The column names assigned to these variables are printed below.
+
+```{r wrangling for headers variable 11 to 14}
+header_11_14<- c("rawah", "neota", "comanche_peak", "cache_la_poudre")
+header_11_14
+```
+
+Study code, Ecological Land Unit (ELU) code and description of a few of the forty soil types recorded in this study are tabulated below. 
+
+```{r soil type description table}
+header_15_54<- description_dat[200:239]
+header_15_54<- str_split(header_15_54, pattern = "\\t", simplify = T)
+soil_table<- data.frame(Study_code = header_15_54[,2], ELU_code = header_15_54[,3],
+                          Description = header_15_54[,5])
+kable(soil_table[c(1, 2, 7, 8),], caption = "Soil Types Codes & Description")
+remove(soil_table)
+```
+
+These forty binary variables are mutually exclusive and are named by attaching the ELU code as suffix to the term 'soil_type_'. A few examples below.
+
+```{r wrangling for headers variable 15 to 55}
+header_15_54<- str_trim(header_15_54[,3], side = "left") 
+header_15_54<- paste0("soil_type_", header_15_54) 
+header_15_54[1:8]
+header_55<- "Cover_Type" 
+headers<- c(header_1_10, header_11_14, header_15_54, header_55)
+colnames(dat)<- headers 
+remove(header_1_10, header_11_14, header_15_54, header_55, headers)
+```
+
+The first digit of the ELU code represent the climatic zone and the second digit represent the geologic zone (Table 2). The last two digit were unique to mapping units and have no significance on climatic and geologic zones/class. These soil types can therefore be represented by fewer variables. For example soil types 2702 through 2717 can be clubbed to a general 'soil types 27' (Section 2.2.3). 
+
+```{r soil type ELU classification}
+soil_type_tab<- description_dat[242:249]
+soil_type_tab<- str_trim(soil_type_tab, side = "both")
+climatic_zones<- str_extract_all(soil_type_tab, pattern = "^[1-8].\\s+[a-z]+\\s*[a-z]*\\s*[a-z]*\\s*[a-z]*", simplify = T)
+climatic_zones<- str_squish(climatic_zones[,1])
+geologic_zones<- str_remove(soil_type_tab, pattern = "^[1-8].\\s+[a-z]+\\s*[a-z]*\\s*[a-z]*\\s*[a-z]*")
+geologic_zones<- str_squish(geologic_zones)
+soil_type_tab<- cbind('Climatic Zones' = climatic_zones, 'Geologic Zones' = geologic_zones)
+soil_type_tab %>% kable(caption = "ELU Soil Classifciation")
+remove(description_dat, climatic_zones, geologic_zones, soil_type_tab)
+```
+
+## 2.2 Creating new variables/Modifying existing variables
+
+Two variables in this dataset  (Aspect & Slope) were measured in degree's. New variables are created to capture the information provided by these variables, as these kinds of measurements are the domain of circular statistics. Circular statistics deals with direction, angles and axes (**<https://en.wikipedia.org/wiki/Directional_statistics>**). These are explained below.
+
+
+### 2.2.1 Slope
+
+Slope refers to the angle, or grade, of an incline. It is typically expressed as percent (gradient) (**https://www.nwcg.gov/course/ffm/vert-horiz-and-slope/45-slope**). In this study, slope was provided in degree's. This was converted into percent slope.
+
+Percent slope is the tangent value of the angle in degree multiplied by 100. As the *tan* function in R takes input in radian, the degree was converted to radian before computing the gradient.
+
+```{r slope gradient from degree}
+dat<- dat %>% mutate(Slope = tan(Slope * pi / 180) * 100)
+```
+
+### 2.2.2 Aspect
+
+Aspect was measured in azimuth degree in this study. Pictorial representation of azimuth degrees is shown in Figure 1. An azimuth is the direction measured in degrees clockwise from north on an azimuth circle (**https://www.nwcg.gov/course/ffm/location/62-azimuths**). 
+
+Two binary variables (north- yes/no & east- yes/no) are created to capture this information. For example azimuth degree 50 meaning north = 1 and east = 1, implies that unit of observation is in the upper right quadrant. The original variable 'Aspect' was dropped
+
+```{r azimuth figure}
+df<- data.frame(x = c(0, 0, 0, -1, 1), y =c(0, -1, 1, 0, 0))
+df_labels<- data.frame(a = c("North", "0°/360°", "East", "90°",
+                             "South", "180°", "West", "270°", "North & West",
+                             "North & East", "South & East", "South & West"),
+                       x = c(-0.1, 0.1, 1.1, 1.1, -0.1, 0.1, -1.1, -1.1, -0.7, 0.7, 0.7, -0.7),
+                       y = c(1.1, 1.1, 0.05, -0.05, -1.1, -1.1, 0.05, -0.05, 0.7, 0.7, -0.7, -0.7))
+ggplot(data = df, aes(x = x, y = y)) +
+  geom_point() +
+  geom_segment(aes(x = 0, y = 1, xend = 0, yend = -1), arrow = arrow(ends = "both")) +
+  geom_segment(aes(x = -1, y = 0, xend = 1, yend = 0), arrow = arrow(ends = "both")) +
+  geom_text(data = df_labels, aes(x, y, label = a)) +
+  ggtitle("Figure 1: Azimuth Degree") + theme_minimal() + 
+  theme(title = element_text(size = 8), axis.text = element_blank(),
+                          axis.title = element_blank())
+grid.circle(x = 0.5, y = 0.5, r = 0.25)
+remove(df, df_labels)
+```
+
+```{r new variables from Aspect}
+dat<- dat %>% 
+  mutate(north = ifelse(Aspect %in% c(0:90) | Aspect %in% c(270:360), 1, 0), 
+         east = ifelse(Aspect %in% c(0:180), 1, 0)) %>%
+  select(- Aspect)
+```
+
+### 2.2.3 Soil Types
+
+The 40 binary columns capturing soil type are collapsed into 11 general soil type columns (See Section 2.1). The original columns were dropped.
+
+```{r soil type from 40 to 11 general types}
+dat<- dat %>% mutate(soil_type_27 = ifelse(soil_type_2702 == 1 | soil_type_2703 == 1 |
+                               soil_type_2704 == 1 | soil_type_2705 == 1 |
+                               soil_type_2706 == 1 | soil_type_2717 == 1, 1, 0),
+         soil_type_35 = ifelse(soil_type_3501 == 1 | soil_type_3502 == 1, 1, 0),
+         soil_type_42 = soil_type_4201,
+         soil_type_47 = ifelse(soil_type_4703 == 1 | soil_type_4704 == 1 |
+                               soil_type_4744 == 1 | soil_type_4758 == 1, 1, 0),
+         soil_type_51 = ifelse(soil_type_5101 == 1 | soil_type_5151 == 1, 1, 0),
+         soil_type_61 = ifelse(soil_type_6101 == 1 | soil_type_6102 == 1, 1, 0),
+         soil_type_67 = soil_type_6731,
+         soil_type_71 = ifelse(soil_type_7101 == 1 | soil_type_7102 == 1 |
+                               soil_type_7103 == 1, 1, 0),
+         soil_type_72 = ifelse(soil_type_7201 == 1 | soil_type_7202 == 1, 1, 0),
+         soil_type_77 = ifelse(soil_type_7700 == 1 | soil_type_7701 == 1 |
+                               soil_type_7702 == 1 | soil_type_7709 == 1 |
+                               soil_type_7710 == 1 | soil_type_7745 == 1 |
+                               soil_type_7746 == 1 | soil_type_7755 == 1 |
+                               soil_type_7756 == 1 | soil_type_7757 == 1 |
+                               soil_type_7790 == 1, 1, 0),
+         soil_type_87 = ifelse(soil_type_8703 == 1 | soil_type_8707 == 1 |
+                               soil_type_8708 == 1 | soil_type_8771 == 1 |
+                               soil_type_8772 == 1 | soil_type_8776 == 1 , 1, 0)) %>%
+  select(- c(14:53))
+```
+
+## 2.3 Spliting data into train and test sets
+
+Cover type is the dependent variable in this analysis. This is an un-ordered qualitative variable with seven levels. The prevalence's of theses types in the full dataset is shown below.
+
+```{r cover types lables and prevalence}
+dat$Cover_Type<- factor(dat$Cover_Type, 
+                        levels = c("1", "2", "3", "4", "5", "6", "7"), 
+                        labels = c("Spruce-Fir", 
+                                   "Lodgepole Pine",
+                                   "Ponderosa Pine",
+                                   "Cottonwood/Willow",
+                                   "Aspen",
+                                   "Douglas-fir",
+                                   "Krummholz"))
+
+dat %>% group_by(Cover_Type) %>%
+  summarise(Number = n(), Proportion = n()/nrow(dat)) %>% 
+  arrange(desc(Proportion)) %>%
+  kable(digits = 3, caption = "Prevalence of Cover Types")
+```
+
+This is a large dataset with close to 600,000 observations. The choice of proportion of data to be split as test set is based on the prevalence of the cover types and computation time. 
+
+Cottonwood/Willow type had the lowest prevalence of about 0.5 % (~ 2800 observations). The function **createDataPartition** sample within each class and will therefore ensure prevalence's of each type similar to the prevalence's observed in the entire data. A sample of 10000 observations will have around 50 observations of Cottonwood and this is around 2% of data (p = 0.02).
+
+This p will ensure that all tree cover types has some representation in the dataset, choosing cross-validation sets similar to test set size will also reduce computation time to some extent (especially KNN).
+
+```{r splitting dataset, echo = TRUE}
+set.seed(27, sample.kind = "Rounding") # if using R 3.5 or earlier, use `set.seed(27)`
+test_index<- createDataPartition(y = dat$Cover_Type, p = 0.02, list = F)
+test_set<- dat[test_index, ]
+train_set<- dat[- test_index, ]
+remove(test_index, dat)
+```
+
+The number of observations in train and test set's are `r nrow(train_set)` & `r nrow(test_set)` respectively. Exploratory data analysis is done using only the train set.
+
+## 2.4 Exploaratory Data Analysis
+
+The association between the independent and dependent variables are presented in this section. Correlation between the independent variables are also explored. 
+
+### 2.4.1 Wildnerness area
+
+This study was conducted in four wilderness area. The association between the cover types and these areas are tabulated below. The table displays proportion within each column (Cover Types).
+
+```{r cover type and wilderness area}
+wilderness_dat<- train_set %>% 
+  select(rawah, neota, comanche_peak, cache_la_poudre, Cover_Type) %>%
+  mutate(Wildnerness = case_when(
+    rawah == 1 ~ "Rawah",
+    neota == 1 ~ "Neota",
+    comanche_peak == 1 ~ "Comanche Peak",
+    cache_la_poudre == 1 ~ "Cache la Poudre"
+  )) 
+kable(prop.table(table(wilderness_dat$Wildnerness, wilderness_dat$Cover_Type), margin = 2),
+      digits = 3, caption = "Cover Types by Wilderness Areas")
+remove(wilderness_dat)
+```
+
+Comanche Peak appears to be the most diverse of the four areas. It has all tree types except Cottonwood, which is found only in Cache la Poudre. Lodgepole Pine is the only tree found in all four area.
+
+### 2.4.2 Elevation 
+
+The distribution of elevation by forest cover types are shown in Figure 2. The dot inside the plot is the mean elevation. Elevation is markedly different between some of the cover types. Ponderosa Pine & Douglas-fir have very similar mean and distribution. Cottonwood & Krummholz have the lowest and highest mean elevation respectively.
+
+```{r cover types and elevation}
+train_set %>% mutate(Cover_Type = reorder(Cover_Type, Elevation, FUN = mean)) %>%
+  ggplot(aes(x = Cover_Type, y = Elevation)) +       
+  geom_boxplot() +                                   
+  ggtitle("Figure 2: Distribution of Elevation by Cover Types") +              
+  xlab("Forest Cover Type") +                     
+  stat_summary(fun = mean, geom="point", size = 2, col = "brown") + 
+  theme_minimal() +
+  theme(title = element_text(size = 8), axis.title = element_text(size = 8), 
+        axis.text = element_text(size = 6)) 
+```
+
+### 2.4.3 Aspect
+
+The original variable aspect in degree's was converted to two new variables (Section 2.2.2). The association between cover types and the four quadrants formed by these two variables are tabulated below.
+
+```{r cover type and quadrants}
+aspect_dat<- train_set %>% select(Cover_Type, north, east) %>%
+  mutate(Quadrant = case_when( 
+  north == 1 & east == 1 ~ "North & East",
+  north == 1 & east == 0 ~ "North & West",
+  north == 0 & east == 1 ~ "South & East",
+  north == 0 & east == 0 ~ "South & West"
+)) 
+kable(prop.table(table(aspect_dat$Quadrant, aspect_dat$Cover_Type), margin = 2),
+      digits = 3, caption = "Cover Types by Aspect Quadrants")
+remove(aspect_dat)
+```
+
+Douglas-fir is mostly observed in the upper quadrants - (0.40 & 0.42 in North East and North West respectively). Aspen and Cottonwood are mostly (>70%) seen on the Eastern side.
+
+### 2.4.4 Slope
+
+There is considerable overlap in the distribution of slope (Figure 3). Steeper slopes seems to be more common in areas were Aspen, Cottonwood, Douglas-fir and Ponnderosa Pine grow.
+
+```{r cover type and slope}
+train_set %>% mutate(Cover_Type = reorder(Cover_Type, Slope, FUN = mean)) %>%
+  ggplot(aes(x = Slope, y = Cover_Type)) + 
+  geom_density_ridges(bandwidth = 1) + 
+  xlab("Percent Slope") +
+  ylab("Cover Types") +
+  ggtitle("Figure 3: Distribution of Slope by Cover Types") +
+  theme_minimal() +
+  theme(title = element_text(size = 8), axis.title = element_text(size = 8), 
+        axis.text = element_text(size = 8)) 
+```
+
+### 2.4.5 Distance to Roadways and Fire-points
+
+Mean and standard deviation (SD) of distance to roadway and fire ignition points are tabulated below.
+
+```{r cover type and distances}
+Cover_Types<- c("Spruce-Fir", "Lodgepole Pine", "Ponderosa Pine", "Cottonwood/Willow", 
+                "Aspen", "Douglas-fir", "Krummholz")
+tab<- train_set %>% group_by(Cover_Type) %>%
+  summarise(Mean = mean(Horizontal_Distance_To_Roadways), 
+            SD = sd(Horizontal_Distance_To_Roadways))
+tab<- t(tab[,2:3])
+colnames(tab)<- Cover_Types
+
+tab1<- train_set %>% group_by(Cover_Type) %>%
+  summarise(Mean = mean(Horizontal_Distance_To_Fire_Points), 
+            SD = sd(Horizontal_Distance_To_Fire_Points))
+tab1<- t(tab1[,2:3])
+colnames(tab1)<- Cover_Types
+kable(tab, caption = "Distance to Roadways", digits = 3)
+kable(tab1, caption = "Distance to Fire Points", digits = 3)
+remove(Cover_Types, tab, tab1)
+```
+
+Lodgepole, Spruce-Fir and Krummholz appear farther away from roadways and fire ignition points when compared to others. There also appears to be correlation between the two variables when looked at summary level. The correlations between all the quantitative independent variables are presented in Section 2.4.8.
+
+### 2.4.6 Distances to Hydrology
+
+Both horizontal and vertical distance to the nearest water features were measured in meters. Negative values are possible for the vertical distances.
+
+```{r cover types and hydrology}
+hydro_dat<- train_set %>% select(Horizontal_Distance_To_Hydrology, Vertical_Distance_To_Hydrology, Cover_Type)
+hydro_dat<- gather(data = hydro_dat, key = distance_type, value = distance, - Cover_Type)
+hydro_dat$distance_type<- factor(hydro_dat$distance_type, labels = c("Horizontal", "Vertical"))
+hydro_dat %>% mutate(Cover_Type = reorder(Cover_Type, distance, FUN = mean)) %>%
+  ggplot(aes(x = Cover_Type, y = distance)) +
+  geom_boxplot(aes(col = distance_type)) +
+  xlab("Forest Cover Type") +
+  ylab("Distance in meters") +
+  ggtitle("Figure 4: Distance to Hydrology by Cover Type") +
+  scale_color_discrete(name = "Distance Type") +
+  theme_minimal() +
+  theme(title = element_text(size = 8), axis.title = element_text(size = 8),
+        axis.text.x = element_text(angle = 45, hjust = 1, size = 8)) 
+remove(hydro_dat)
+```
+
+Except for Cottonwood which appears to be found very near the water features with overlap in horizontal and vertical distances, there are no pattern found on the other tree types.
+
+### 2.4.7 Hillshade Index
+
+Hillshade index (values from 0 to 255) was captured at 9 am, noon and 3 pm during summer solstice. Summer solstice is the longest sunlight period and occurs sometime between June 20 and June 22 in the Northern Hemisphere (**<https://en.wikipedia.org/wiki/Summer_solstice>**). Mean and SD of these variables are tabulated below.
+
+```{r cover types and hillshade index}
+Cover_Types<- c("Spruce-Fir", "Lodgepole Pine", "Ponderosa Pine", "Cottonwood/Willow", 
+                "Aspen", "Douglas-fir", "Krummholz")
+tab<- train_set %>% group_by(Cover_Type) %>%
+  summarise(Mean = mean(Hillshade_9am), 
+            SD = sd(Hillshade_9am))
+tab<- t(tab[,2:3])
+colnames(tab)<- Cover_Types
+
+tab1<- train_set %>% group_by(Cover_Type) %>%
+  summarise(Mean = mean(Hillshade_Noon), 
+            SD = sd(Hillshade_Noon))
+tab1<- t(tab1[,2:3])
+colnames(tab1)<- Cover_Types
+
+tab2<- train_set %>% group_by(Cover_Type) %>%
+  summarise(Mean = mean(Hillshade_3pm), 
+            SD = sd(Hillshade_3pm))
+tab2<- t(tab2[,2:3])
+colnames(tab2)<- Cover_Types
+
+kable(tab, caption = "Hillshade Index 9 AM", digits = 3)
+kable(tab1, caption = "Hillshade Index Noon", digits = 3)
+kable(tab2, caption = "Hillshade Index 3 PM", digits = 3)
+remove(tab, tab1, tab2, Cover_Types)
+```
+
+Correlation is expected between these variables and other variables derived from the spatial data especially slope. This is because hillshading procedure uses slope and aspect in its computation. 
+
+### 2.4.8 Correlated variables
+
+Correlation between all quantitative variables in the dataset are shown in figure below. There are nine variables as aspect was converted into two binary variables.
+
+```{r correlation between quantitative variables}
+cor_dat<- train_set %>% 
+  select(Elevation, Slope, Horizontal_Distance_To_Hydrology,
+         Vertical_Distance_To_Hydrology, Horizontal_Distance_To_Fire_Points,
+         Horizontal_Distance_To_Roadways, Hillshade_9am, Hillshade_Noon,
+         Hillshade_3pm) %>%
+  rename(elev = Elevation, slope = Slope, hyd_H = Horizontal_Distance_To_Hydrology,
+         hyd_V = Vertical_Distance_To_Hydrology, fire = Horizontal_Distance_To_Fire_Points,
+         road = Horizontal_Distance_To_Roadways, shad_9 = Hillshade_9am, shad_n = Hillshade_Noon,
+         shad_3 = Hillshade_3pm)
+
+ggcorr(cor_dat, low = "#FF0000", mid = "#FFFFFF", high = "#00FF00", label = TRUE, label_round = 2, legend.position = "none") +
+  ggtitle("Figure 6: Correlation Matrix")
+```
+
+The maximum absolute correlation was between hillshade index at 9 am and hillshade index at 3 pm (-0.78). The algorithm described by Kuhn and Johnston **(<https://scientistcafe.com/ids/collinearity.html>)**, offer an approach to decide which among the two highly correlated variable to be removed (variable with the higher average absolute correlation). The function *findCorrelation* of the caret package compute this average and returns the name of the variable. Hillshade index at 3 pm has a higher absolute correlation than the index at 9 am and this variable will not included in the prediction models.
+
+```{r identifying which correlated variable to remove, echo = TRUE}
+findCorrelation(cor(cor_dat), cutoff = 0.75, names = T)
+remove(cor_dat)
+```
+
+### 2.4.9 Cover Type & Soil Types
+
+The proportion of observations of the 11 soil types (1 = present) are shown below. The function *nearZeroVar* is used to identify types with very small number of "present" compared to overall size. 
+
+```{r general soil types proportion & zerovars, echo = TRUE}
+train_set %>% select(17:27) %>% summarise_all(.funs = function(x) mean(x == 1))
+nearZeroVar(train_set %>% select(17:27), names = T)
+```
+
+Soil types 35, 42, 51, 61,  67 & 71 have proportion less than 0.05 and because these variables can take only two values (0 or 1), they will satisfy both the unique cut (< 10) and frequency cut (> 95/5) defaults of the function. These soil types will not be included in the prediction models. The relationship between the other soil types and tree cover types are shown in Figure 7.
+
+```{r heatmap soil type and cover type}
+soil_dat<- train_set %>% 
+  select(14, 17, 20, 25:27) %>%
+  group_by(Cover_Type) %>% 
+  summarise_all(.funs = sum)
+cover_names<- soil_dat$Cover_Type
+soil_matrix<- as.matrix(soil_dat[, c(2:6)])
+rownames(soil_matrix)<- cover_names
+soil_matrix<- sweep(soil_matrix, MARGIN = 1, STATS = rowSums(soil_matrix), FUN = "/")
+hmcol <- colorRampPalette(brewer.pal(9, "RdBu"))(20)
+par(cex.main = 0.5)
+heatmap(soil_matrix, Rowv = NA, Colv = NA, col = hmcol, 
+        scale = "none", cexRow = 0.75, cexCol = 0.75, 
+        main = "Figure 7: Heatmap of Soil Types and Cover Types")
+remove(soil_dat, soil_matrix, hmcol)
+```
+
+Color represents the proportion of observations within cover type, blue meaning higher proportion and red lower. A high percentage of areas were Krummholz grow have soil type 87. Cottonwood mostly grows in soil type 27.
+
+# 3. Results
+
+The dataset donor in his article used overall **accuracy** as the performance metric to evaluate different techniques. The article presented two algorithms- Linear Discriminant Analysis (LDA) & Artificial Neural Network (ANN) using different number of predictors. The highest overall accuracy reported was 70.6 % and this achieved with ANN using all 54 predictors. The highest accuracy with LDA was 58.4 % [2].
+
+The same metric (**Accuracy**) will be used in this analysis for comparison purpose. In this report, three machine learning techniques are used.
+
++ Multinomial Logistic Regression
++ K- Nearest Neighbor (k-NN)
++ Classification Tree
+
+The variables which were flagged in Section 2 will not be used in all three models and therefore removed from both train and test sets. A few R code chunks are printed in this section for ease of review.
+
+```{r removing flagged predictors from train and test set, echo = TRUE}
+train_set<- train_set %>%
+  select(-c(8, 18:19, 21:24)) %>%  # 8 = hillshade_3, 18 = soil_35, 19 = soil_42, 21 to 24 are
+                                   # soil_types 51,61, 67 and 71 respectively
+  mutate(Cover_Type = factor(case_when(   # changing names to abbreviations to make 
+                                          # confusion matrix fit in a line
+    Cover_Type == "Spruce-Fir" ~ "SF",
+    Cover_Type == "Lodgepole Pine" ~ "LP",
+    Cover_Type == "Ponderosa Pine" ~ "PP",
+    Cover_Type == "Cottonwood/Willow" ~ "CW",
+    Cover_Type == "Aspen" ~ "AS",
+    Cover_Type == "Douglas-fir" ~ "DF",
+    Cover_Type == "Krummholz" ~ "KR"
+  )))
+                              
+test_set<- test_set %>%            # same as train set
+  select(-c(8, 18:19, 21:24)) %>%
+  mutate(Cover_Type = factor(case_when(
+    Cover_Type == "Spruce-Fir" ~ "SF",
+    Cover_Type == "Lodgepole Pine" ~ "LP",
+    Cover_Type == "Ponderosa Pine" ~ "PP",
+    Cover_Type == "Cottonwood/Willow" ~ "CW",
+    Cover_Type == "Aspen" ~ "AS",
+    Cover_Type == "Douglas-fir" ~ "DF",
+    Cover_Type == "Krummholz" ~ "KR"
+  )))
+names(test_set)
+```
+
+## 3.1 Multinomial Logistic Regression
+
+Multinomial logistic regression is the name for logistic regression where the dependent variable is nominal (un-ordered qualitative) with more than two levels. The ***multinom*** function of the ***nnet*** package is used in this analysis. Details on other functions that implements this regression can be found in this website **(<https://www.analyticsvidhya.com/blog/2016/02/multinomial-ordinal-logistic-regression/>)**. 
+
+The quantitative variables are scaled before fitting the model (train) and prediction (test). The variable "rawah" is removed form the data for this analysis. The four wilderness area was given as four binary variables and keeping all four would cause co-linearity with the intercept. The cover type is additionally removed in the test set. All independent variable printed above are included and there is no tuning parameter for this model.
+
+The output type available with ***predict*** function for *multinom* fit is similar to other linear models discussed in the course [3]. It could be "prob" for probability which returns the probability for each class levels. The class with the highest probability is returned if type = "class" is given. Then confusion matrix is used to compute the performance metrics (See below).
+
+```{r multinomial regression, echo = TRUE}
+scale2 <- function(x) (x - mean(x)) / sd(x) # the scale function in base returns object of
+                                            # class = matrix; this custom function  
+                                            # preserves the vector class
+
+multinom_train<- train_set %>% 
+  select(- rawah) %>%                             # dropping 'rawah' to avoid collinearity      
+  mutate_at(c(1:8), .funs = scale2)               # scaling the continuous variables
+
+multinom_test<- test_set %>% select(- rawah, -Cover_Type) %>% # removing dependent variable
+  mutate_at(c(1:8), .funs = scale2)                
+
+multinom_fit<- multinom(Cover_Type ~ ., data = multinom_train, trace = FALSE) # model fit
+
+y_hat_mutlinom<- predict(multinom_fit, newdata = multinom_test, type = "class")
+
+accuracy_multinom<- confusionMatrix(y_hat_mutlinom, test_set$Cover_Type)
+
+accuracy_multinom$table
+
+accuracy_multinom$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")]
+
+remove(multinom_fit, multinom_test, multinom_train, y_hat_mutlinom, accuracy_multinom)
+```
+
+The predictions are generally poor in Aspen, Cottonwood and Douglas-fir, the three types with the three lowest prevalence (Table 3). Although Krummholz (3.5%), has a prevalence close to Douglas-Fir (3%), the algorithm detected this type better. The overall accuracy is 72 % and it is comparable to the highest accuracy reported by the dataset donor with ANN and much better than the one reported with LDA [2].
+
+## 3.2 K- Nearest Neighbor (k-NN)
+
+KNN is an algorithm that uses distance to predict observations. The k refers to the number of nearest neighbor to consider in making prediction and it is a tuning parameter.
+
+For deciding the best k to use in test set, three cross-validation set of sample size similar to the test set are created. For this the function **createFolds** is used. This function splits the total observation in a set into k **(this k refers to k-fold CV; not to be confused with the k in KNN)** sets, preserving the balance of the class types (prevalence). A k of 50 will return a list of 50 index of size similar to the test size and the first three are extracted. 
+
+In each fold, KNN algorithm are run using k of 3, 7, 11 and 15. The creation of data folds and the KNN computations in the first fold are printed below. The quantitative variables are scaled and one of the wilderness area column are removed.
+
+```{r creating folds and KNN fold 1, echo = TRUE}
+
+set.seed(27, sample.kind = "Rounding") # if using R 3.5 or earlier, use `set.seed(27)`
+
+folds<- createFolds(y = train_set$Cover_Type, k = 50, list = T)[1:3] # indexing first 3 vectors
+
+cv_fold1<- train_set %>% slice(folds$Fold01) %>%  # selecting fold 1 observations
+  select(-Cover_Type, -rawah) %>%   # cover type removed - dependent, rawah removed
+                                    # as it is redundant for wilderness information
+  mutate_at(c(1:8), .funs = scale2) # scaling continuous variables (preprocessing for KNN)
+
+x1<- train_set %>% select(- Cover_Type, - rawah) %>%  # same as above but for training
+  slice(- folds$Fold01) %>%                           # removing fold 1 observations
+  mutate_at(c(1:8), .funs = scale2) %>% as.matrix()
+
+y1<- train_set$Cover_Type[- folds$Fold01]  # creating a vector of class
+
+knn_fit1_k3<- knn3(x1, y1, k = 3)         # knn fit using k = 3
+
+y_hat1_k3<- predict(knn_fit1_k3, cv_fold1, type = "class") # prediction in CV fold 1 set
+
+f1_k3<- confusionMatrix(y_hat1_k3, 
+                        train_set$Cover_Type[folds$Fold01]) # computing performance metrics
+
+remove(knn_fit1_k3, y_hat1_k3) # removing fitted model (k=3) and its predictions
+
+knn_fit1_k7<- knn3(x1, y1, k = 7) # knn fit using k = 7
+y_hat1_k7<- predict(knn_fit1_k7, cv_fold1, type = "class")
+f1_k7<- confusionMatrix(y_hat1_k7, train_set$Cover_Type[folds$Fold01])
+remove(knn_fit1_k7, y_hat1_k7)
+
+knn_fit1_k11<- knn3(x1, y1, k = 11) # knn fit using k = 11
+y_hat1_k11<- predict(knn_fit1_k11, cv_fold1, type = "class")
+f1_k11<- confusionMatrix(y_hat1_k11, train_set$Cover_Type[folds$Fold01])
+remove(knn_fit1_k11, y_hat1_k11)
+
+knn_fit1_k15<- knn3(x1, y1, k = 15) # knn fit using k = 15
+y_hat1_k15<- predict(knn_fit1_k15, cv_fold1, type = "class")
+f1_k15<- confusionMatrix(y_hat1_k15, train_set$Cover_Type[folds$Fold01])
+remove(knn_fit1_k15, y_hat1_k15, x1, y1, cv_fold1)
+
+accuracy_fold1<- data.frame(Fold = "Fold 1", K = c(3,7,11, 15), 
+           Accuracy = c(f1_k3$overall["Accuracy"], f1_k7$overall["Accuracy"],
+                        f1_k11$overall["Accuracy"], f1_k15$overall["Accuracy"]))
+remove(f1_k3,f1_k7,f1_k11, f1_k15)
+accuracy_fold1
+```
+
+The above procedures were repeated for fold 2 and 3 and the results are plotted (Figure 8). 
+
+```{r KNN fold 2 and 3}
+cv_fold2<- train_set %>% slice(folds$Fold02) %>%   # same as above for fold 2
+  select(-Cover_Type, -rawah) %>%
+  mutate_at(c(1:8), .funs = scale2)
+x2<- train_set %>% select(- Cover_Type, - rawah) %>%
+  slice(- folds$Fold02) %>%
+  mutate_at(c(1:8), .funs = scale2) %>% as.matrix()
+y2<- train_set$Cover_Type[- folds$Fold02]
+
+knn_fit2_k3<- knn3(x2, y2, k = 3)
+y_hat2_k3<- predict(knn_fit2_k3, cv_fold2, type = "class")
+f2_k3<- confusionMatrix(y_hat2_k3, train_set$Cover_Type[folds$Fold02])
+remove(knn_fit2_k3, y_hat2_k3)
+
+knn_fit2_k7<- knn3(x2, y2, k = 7)
+y_hat2_k7<- predict(knn_fit2_k7, cv_fold2, type = "class")
+f2_k7<- confusionMatrix(y_hat2_k7, train_set$Cover_Type[folds$Fold02])
+remove(knn_fit2_k7, y_hat2_k7)
+
+knn_fit2_k11<- knn3(x2, y2, k = 11)
+y_hat2_k11<- predict(knn_fit2_k11, cv_fold2, type = "class")
+f2_k11<- confusionMatrix(y_hat2_k11, train_set$Cover_Type[folds$Fold02])
+remove(knn_fit2_k11, y_hat2_k11)
+
+knn_fit2_k15<- knn3(x2, y2, k = 15)
+y_hat2_k15<- predict(knn_fit2_k15, cv_fold2, type = "class")
+f2_k15<- confusionMatrix(y_hat2_k15, train_set$Cover_Type[folds$Fold02])
+remove(knn_fit2_k15, y_hat2_k15, x2, y2, cv_fold2)
+
+accuracy_fold2<- data.frame(Fold = "Fold 2", K = c(3,7,11, 15), 
+           Accuracy = c(f2_k3$overall["Accuracy"], f2_k7$overall["Accuracy"],
+                        f2_k11$overall["Accuracy"], f2_k15$overall["Accuracy"]))
+remove(f2_k3,f2_k7,f2_k11, f2_k15)
+
+cv_fold3<- train_set %>% slice(folds$Fold03) %>%     # same as above for fold 3
+  select(-Cover_Type, -rawah) %>%
+  mutate_at(c(1:8), .funs = scale2)
+x3<- train_set %>% select(- Cover_Type, - rawah) %>%
+  slice(- folds$Fold03) %>%
+  mutate_at(c(1:8), .funs = scale2) %>% as.matrix()
+y3<- train_set$Cover_Type[- folds$Fold03]
+
+knn_fit3_k3<- knn3(x3, y3, k = 3)
+y_hat3_k3<- predict(knn_fit3_k3, cv_fold3, type = "class")
+f3_k3<- confusionMatrix(y_hat3_k3, train_set$Cover_Type[folds$Fold03])
+remove(knn_fit3_k3, y_hat3_k3)
+
+knn_fit3_k7<- knn3(x3, y3, k = 7)
+y_hat3_k7<- predict(knn_fit3_k7, cv_fold3, type = "class")
+f3_k7<- confusionMatrix(y_hat3_k7, train_set$Cover_Type[folds$Fold03])
+remove(knn_fit3_k7, y_hat3_k7)
+
+knn_fit3_k11<- knn3(x3, y3, k = 11)
+y_hat3_k11<- predict(knn_fit3_k11, cv_fold3, type = "class")
+f3_k11<- confusionMatrix(y_hat3_k11, train_set$Cover_Type[folds$Fold03])
+remove(knn_fit3_k11, y_hat3_k11)
+
+knn_fit3_k15<- knn3(x3, y3, k = 15)
+y_hat3_k15<- predict(knn_fit3_k15, cv_fold3, type = "class")
+f3_k15<- confusionMatrix(y_hat3_k15, train_set$Cover_Type[folds$Fold03])
+remove(knn_fit3_k15, y_hat3_k15, x3, y3, cv_fold3)
+
+accuracy_fold3<- data.frame(Fold = "Fold 3", K = c(3,7,11, 15), 
+           Accuracy = c(f3_k3$overall["Accuracy"], f3_k7$overall["Accuracy"],
+                        f3_k11$overall["Accuracy"], f3_k15$overall["Accuracy"]))
+
+remove(f3_k3,f3_k7,f3_k11, f3_k15)
+
+accuracy_folds<- rbind(accuracy_fold1, accuracy_fold2, accuracy_fold3)
+
+remove(accuracy_fold1, accuracy_fold2, accuracy_fold3, folds)
+
+accuracy_folds %>% ggplot(aes(x = K, y = Accuracy, col = Fold)) +
+  geom_point() + geom_line() + 
+  ggtitle("Figure 8: KNN Accuracy and K") +
+  theme_minimal() +
+  theme(title = element_text(size = 8), axis.title = element_text(size = 8), 
+        axis.text = element_text(size = 8), legend.text = element_text(size = 8)) 
+
+remove(accuracy_folds)
+```
+
+Within all three folds, k = 3 produced the best accuracy and this value is applied for the test set. The result of the KNN algorithm for the test set is printed below.
+
+```{r KNN test set, echo = TRUE}
+
+x<- train_set %>% select(- Cover_Type, - rawah) %>%
+  mutate_at(c(1:8), .funs = scale2) %>% as.matrix() # train set predictor matrix
+
+y<- train_set$Cover_Type
+
+knn_fit<- knn3(x, y, k = 3)  # best k from cross validation
+
+knn_test<- test_set %>% select(- Cover_Type, - rawah) %>%
+  mutate_at(c(1:8), .funs = scale2)   # test set data frame ; dependent variable removed
+
+y_hat_knn<- predict(knn_fit, knn_test, type = "class")
+
+accuracy_knn<- confusionMatrix(y_hat_knn, test_set$Cover_Type)
+
+accuracy_knn$table
+
+accuracy_knn$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")]
+
+remove(x, y, knn_fit, knn_test, y_hat_knn, accuracy_knn)
+```
+
+There is a huge increase in accuracy from that obtained with Multinomial Logistic Regression. The performance of the algorithm in detecting cover types with low prevalence increases very much.
+
+## 3.3 Classification Trees
+
+Classification Tree is an algorithm that employs recursive (repeated) partitioning to fit data. The **rpart** function of the *rpart* package is used for this analysis. This algorithm has three tuning parameter - 'cp' (complexity parameter- proportion reduction in gini index or entropy), 'minsplit' (minimum number of observation in a node before splitting) and 'minbucket' (minimum number of observations in each node) which is minsplit/3 [3].
+
+Considering that the prevalence of four of the seven tree covers are less than 0.05 (Table 3), with one type less than 0.005, the default tune parameter of cp = 0.01 and minsplit = 20 will not allow the tree grow past three or four nodes. To make this computation quicker minsplit was fixed at 8. **cp** of 0, 0.0025, 0.005 and 0.0075 was tested with cross validation sets.
+
+CV procedure is similar to the one used with KNN. The wilderness information in four column are collapsed into one and the soil type are converted into factor for this algorithm. The method for first fold is shown below.
+
+```{r classification tree fold 1, echo = TRUE}
+
+set.seed(3, sample.kind = "Rounding") # if using R 3.5 or earlier, use `set.seed(3)`
+
+folds<- createFolds(y = train_set$Cover_Type, k = 50, list = T)[1:3] # indexing first 3 vectors
+
+rpart_train<- train_set %>%
+  mutate_at(c(14:20), .funs = function(x)factor(ifelse(x == 1, "Yes", "No"))) %>%
+  mutate(Wildnerness = factor(case_when(    # one column for wilderness information
+    rawah == 1 ~ "Rawah",
+    neota == 1 ~ "Neota",
+    comanche_peak == 1 ~ "Comanche Peak",
+    cache_la_poudre == 1 ~ "Cache la Poudre"
+  ))) %>% select(- c(9:12))                # removing the binary wilderness columns
+
+
+cv_fold1_train<- rpart_train %>%
+  slice(- folds$Fold01)          # removing fold 1 observations
+
+cv_fold1<-  rpart_train %>%
+  slice(folds$Fold01) %>%       # slicing only fold 1 observation
+  select(- Cover_Type)          # removing the variable to be predicted (dependent variable)
+
+rpart_fit1_c1<- rpart(Cover_Type ~ ., data = cv_fold1_train, method = "class",
+                  control = rpart.control(cp = 0, minsplit = 8))
+y_hat_rpart1_c1<- predict(rpart_fit1_c1, cv_fold1, type = "class")
+cm1<- confusionMatrix(y_hat_rpart1_c1, train_set$Cover_Type[folds$Fold01])
+remove(rpart_fit1_c1, y_hat_rpart1_c1)
+
+rpart_fit1_c2<- rpart(Cover_Type ~ ., data = cv_fold1_train, method = "class",
+                  control = rpart.control(cp = 0.0025, minsplit = 8))
+y_hat_rpart1_c2<- predict(rpart_fit1_c2, cv_fold1, type = "class")
+cm2<- confusionMatrix(y_hat_rpart1_c2, train_set$Cover_Type[folds$Fold01])
+remove(rpart_fit1_c2, y_hat_rpart1_c2)
+
+rpart_fit1_c3<- rpart(Cover_Type ~ ., data = cv_fold1_train, method = "class",
+                  control = rpart.control(cp = 0.005, minsplit = 8))
+y_hat_rpart1_c3<- predict(rpart_fit1_c3, cv_fold1, type = "class")
+cm3<- confusionMatrix(y_hat_rpart1_c3, train_set$Cover_Type[folds$Fold01])
+remove(rpart_fit1_c3, y_hat_rpart1_c3)
+
+rpart_fit1_c4<- rpart(Cover_Type ~ ., data = cv_fold1_train, method = "class",
+                  control = rpart.control(cp = 0.0075, minsplit = 8))
+y_hat_rpart1_c4<- predict(rpart_fit1_c4, cv_fold1, type = "class")
+cm4<- confusionMatrix(y_hat_rpart1_c4, train_set$Cover_Type[folds$Fold01])
+remove(rpart_fit1_c4, y_hat_rpart1_c4)
+
+accuracy_fold1<- data.frame(Fold = "Fold 1", 
+                            CP = c(0, 0.0025, 0.005, 0.0075),
+                            Accuracy = c(cm1$overall["Accuracy"],
+                                         cm2$overall["Accuracy"],
+                                         cm3$overall["Accuracy"],
+                                         cm4$overall["Accuracy"]))
+
+remove(cv_fold1, cv_fold1_train)
+remove(cm1,cm2,cm3, cm4)
+accuracy_fold1
+```
+
+The procedure above are repeated for fold 2 and fold 3 and the results are plotted in Figure 9.
+
+```{r classification tree fold 2 and 3}
+cv_fold2_train<- rpart_train %>%
+  slice(- folds$Fold02)          # removing fold 2 observations
+
+cv_fold2<-  rpart_train %>%
+  slice(folds$Fold02) %>%       # slicing only fold 2 observation
+  select(- Cover_Type)          # removing the variable to be predicted (dependent variable)
+
+rpart_fit2_c1<- rpart(Cover_Type ~ ., data = cv_fold2_train, method = "class",
+                      control = rpart.control(cp = 0, minsplit = 8))
+y_hat_rpart2_c1<- predict(rpart_fit2_c1, cv_fold2, type = "class")
+cm1<- confusionMatrix(y_hat_rpart2_c1, train_set$Cover_Type[folds$Fold02])
+remove(rpart_fit2_c1, y_hat_rpart2_c1)
+
+
+rpart_fit2_c2<- rpart(Cover_Type ~ ., data = cv_fold2_train, method = "class",
+                      control = rpart.control(cp = 0.0025, minsplit = 8))
+y_hat_rpart2_c2<- predict(rpart_fit2_c2, cv_fold2, type = "class")
+cm2<- confusionMatrix(y_hat_rpart2_c2, train_set$Cover_Type[folds$Fold02])
+remove(rpart_fit2_c2, y_hat_rpart2_c2)
+
+rpart_fit2_c3<- rpart(Cover_Type ~ ., data = cv_fold2_train, method = "class",
+                      control = rpart.control(cp = 0.005, minsplit = 8))
+y_hat_rpart2_c3<- predict(rpart_fit2_c3, cv_fold2, type = "class")
+cm3<- confusionMatrix(y_hat_rpart2_c3, train_set$Cover_Type[folds$Fold02])
+remove(rpart_fit2_c3, y_hat_rpart2_c3)
+
+rpart_fit2_c4<- rpart(Cover_Type ~ ., data = cv_fold2_train, method = "class",
+                      control = rpart.control(cp = 0.0075, minsplit = 8))
+y_hat_rpart2_c4<- predict(rpart_fit2_c4, cv_fold2, type = "class")
+cm4<- confusionMatrix(y_hat_rpart2_c4, train_set$Cover_Type[folds$Fold02])
+remove(rpart_fit2_c4, y_hat_rpart2_c4)
+
+accuracy_fold2<- data.frame(Fold = "Fold 2", 
+                            CP = c(0, 0.0025, 0.005, 0.0075),
+                            Accuracy = c(cm1$overall["Accuracy"],
+                                         cm2$overall["Accuracy"],
+                                         cm3$overall["Accuracy"],
+                                         cm4$overall["Accuracy"]))
+
+remove(cv_fold2, cv_fold2_train)
+remove(cm1,cm2,cm3, cm4)
+
+cv_fold3_train<- rpart_train %>%
+  slice(- folds$Fold03)          # removing fold 3 observations
+
+cv_fold3<-  rpart_train %>%
+  slice(folds$Fold03) %>%       # slicing only fold 3 observation
+  select(- Cover_Type)          # removing the variable to be predicted (dependent variable)
+
+rpart_fit3_c1<- rpart(Cover_Type ~ ., data = cv_fold3_train, method = "class",
+                      control = rpart.control(cp = 0, minsplit = 8))
+y_hat_rpart3_c1<- predict(rpart_fit3_c1, cv_fold3, type = "class")
+cm1<- confusionMatrix(y_hat_rpart3_c1, train_set$Cover_Type[folds$Fold03])
+remove(rpart_fit3_c1, y_hat_rpart3_c1)
+
+rpart_fit3_c2<- rpart(Cover_Type ~ ., data = cv_fold3_train, method = "class",
+                      control = rpart.control(cp = 0.0025, minsplit = 8))
+y_hat_rpart3_c2<- predict(rpart_fit3_c2, cv_fold3, type = "class")
+cm2<- confusionMatrix(y_hat_rpart3_c2, train_set$Cover_Type[folds$Fold03])
+remove(rpart_fit3_c2, y_hat_rpart3_c2)
+
+rpart_fit3_c3<- rpart(Cover_Type ~ ., data = cv_fold3_train, method = "class",
+                      control = rpart.control(cp = 0.005, minsplit = 8))
+y_hat_rpart3_c3<- predict(rpart_fit3_c3, cv_fold3, type = "class")
+cm3<- confusionMatrix(y_hat_rpart3_c3, train_set$Cover_Type[folds$Fold03])
+remove(rpart_fit3_c3, y_hat_rpart3_c3)
+
+rpart_fit3_c4<- rpart(Cover_Type ~ ., data = cv_fold3_train, method = "class",
+                      control = rpart.control(cp = 0.0075, minsplit = 8))
+y_hat_rpart3_c4<- predict(rpart_fit3_c4, cv_fold3, type = "class")
+cm4<- confusionMatrix(y_hat_rpart3_c4, train_set$Cover_Type[folds$Fold03])
+remove(rpart_fit3_c4, y_hat_rpart3_c4)
+
+accuracy_fold3<- data.frame(Fold = "Fold 3", 
+                            CP = c(0, 0.0025, 0.005, 0.0075),
+                            Accuracy = c(cm1$overall["Accuracy"],
+                                         cm2$overall["Accuracy"],
+                                         cm3$overall["Accuracy"],
+                                         cm4$overall["Accuracy"]))
+
+remove(cv_fold3, cv_fold3_train)
+remove(cm1,cm2,cm3,cm4)
+
+accuracy_folds<- rbind(accuracy_fold1, accuracy_fold2, accuracy_fold3)
+
+remove(accuracy_fold1, accuracy_fold2, accuracy_fold3)
+
+accuracy_folds %>% ggplot(aes(x = CP, y = Accuracy, col = Fold)) +
+  geom_point() + geom_line() + 
+  ggtitle("Figure 9: Classification Accuracy and Tuning Paramters") +
+  theme_minimal() +
+  theme(title = element_text(size = 8), axis.title = element_text(size = 8), 
+        axis.text = element_text(size = 8), legend.text = element_text(size = 8)) 
+
+remove(accuracy_folds)
+```
+
+With all three fold, highest accuracy was with cp = 0 which is almost similar to KNN. For all other values in all fold, the accuracy dropped significantly. There is considerable variation in accuracy across folds with cp of 0.0025, 0.005 and 0.0075, the accuracy with cp = 0.0025 in fold 3 was less than the accuracy obtained with cp = 0.005 in fold 1 and fold 2. Taking a conservative approach on not to over train, the cp of 0.0025 was chosen for the test set. The results are printed below.
+
+```{r classification tree test set, echo = TRUE}
+rpart_test<- test_set %>%
+  mutate_at(c(14:20), .funs = function(x)factor(ifelse(x == 1, "Yes", "No"))) %>%
+  mutate(Wildnerness = factor(case_when(
+    rawah == 1 ~ "Rawah",
+    neota == 1 ~ "Neota",
+    comanche_peak == 1 ~ "Comanche Peak",
+    cache_la_poudre == 1 ~ "Cache la Poudre"
+  ))) %>% select(- c(9:12)) %>% select(- Cover_Type) # removing the dependent variable
+
+rpart_fit<- rpart(Cover_Type ~ ., data = rpart_train, method = "class",
+                      control = rpart.control(cp = 0.0025, minsplit = 8)) # best cp
+
+y_hat_rpart<- predict(rpart_fit, rpart_test, type = "class")
+
+accuracy_rpart<- confusionMatrix(y_hat_rpart, test_set$Cover_Type)
+
+accuracy_rpart$table
+accuracy_rpart$overall[c("Accuracy", "AccuracyLower", "AccuracyUpper")]
+
+remove(rpart_test, rpart_train, rpart_fit, y_hat_rpart, accuracy_rpart)
+```
+
+The accuracy obtained with this algorithm is comparable with the one obtained with Multinomial Logistic Regression and the accuracy reported by the dataset donor. The prediction pattern of tree types with low prevalence are similar to regression.
+
+# 4. Conclusion
+
+The cover type information are a part of forest management inventory and are useful for resources managers. The traditional method of collecting these information by field personnel or remote methods like aerial photography, using drones are costly and sometimes not possible- very large area, inaccessible or neighboring landmass [2].
+
+These data are obtained from Landsat imaging and processing. Accuracy was chosen as the performance measure to make comparison with the result reported previously[2]. The accuracy obtained with Multinomial Logistic Regression was comparable to the one obtained with ANN (around 70%) by the data donor. The accuracy with LDA (57.8 %) was much lower than the ones reported here. 
+
+Given regression and linear discriminant analysis are somewhat related and produce similar results [3], this difference should be due to the sampling technique employed in that study. In that study, the training set was composed of 11340 observations with 1620 observations of each cover type [2].This is much lower than the number of observations used for training in this report. This is one of the strength of this analysis- a large training set along with a representative test set. 
+
+This analysis is not without limitations. Some are listed below.
+
++ The most commonly used cut off absolute correlation (0.75) was used to remove highly correlated variables. For categorical variables, **nearZerovar** function was used with default. Other cut-offs for both could have completely different fit and these were not explored.
++ Variable selection (backward, forward,.. in a separate CV set) can be considered as tuning in regression analysis and these were not performed in this analysis. 
++ Classification tree tuning parameters were not fully optimised- it is possible that a different cp and minsplit could have given a better accuracy
++ Random Forest are powerful than classification tree and this technique was not used.
++ Though not a big limiting factor, the number of cross validation was limited to three for computation quickness. Since the training set was very large- this would not have much impact.
++ Aspect was measured in azimuth degree (Section 2.2.2). In this scenario, statistics with linear measurement will not apply. In an azimuth degree, 1 is closer to 350 than 120, as both 1 and 350 will lie in north side and 120 will be in the south. In this analysis, this was converted to binary variable. The use  of circular statistics could have captured this information better.
+
+# References
+
+1. FAO, Global Forest Resources Assessment 2000: Terms and definitions. Available at **<http://www.fao.org/3/Y1997E/y1997e1m.htm#bm58>**.
+
+2. Blackard, Jock A. and Denis J. Dean. 2000. "Comparative Accuracies of Artificial Neural Networks and Discriminant Analysis in Predicting Forest Cover Types from Cartographic Variables." Computers and Electronics in Agriculture 24(3):131-151. Available at **https://www.fs.fed.us/rm/ogden/research/publications/downloads/journals/1999_compag_blackard.pdf**.
+
+3. Rafael A. Irizarry. Introduction to Data Science. Available at **<https://rafalab.github.io/dsbook/>**
+
