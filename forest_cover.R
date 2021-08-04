@@ -367,7 +367,7 @@ Cover_Types<- c("Spruce-Fir", "Lodgepole Pine", "Ponderosa Pine",
                 "Cottonwood/Willow", "Aspen", "Douglas-fir","Krummholz") # creating a vector with names of 
                                                                          # cover types
 
-tab<- dat %>% group_by(Cover_Type) %>%
+tab<- train_set %>% group_by(Cover_Type) %>%
   summarise(Mean = mean(Horizontal_Distance_To_Roadways), # computing the mean and sd of distance roadway
                                                           # by cover types ( 7 X 3 dataframe)
             SD = sd(Horizontal_Distance_To_Roadways))
@@ -377,7 +377,7 @@ tab<- t(tab[,2:3])                                       # indexing the 2nd and 
 
 colnames(tab)<- Cover_Types                              # assigning column-names/headers to the matrix above
 
-tab1<- dat %>% group_by(Cover_Type) %>%                  # same procedure as above for distance to fire point
+tab1<- train_set %>% group_by(Cover_Type) %>%                  # same procedure as above for distance to fire point
   summarise(Mean = mean(Horizontal_Distance_To_Fire_Points), 
             SD = sd(Horizontal_Distance_To_Fire_Points))
 
@@ -438,7 +438,7 @@ remove(hydro_dat)
 Cover_Types<- c("Spruce-Fir", "Lodgepole Pine", "Ponderosa Pine",
                 "Cottonwood/Willow", "Aspen", "Douglas-fir","Krummholz") # creating a vector with names of 
                                                                          # cover types
-tab<- dat %>% group_by(Cover_Type) %>%
+tab<- train_set %>% group_by(Cover_Type) %>%
   summarise(Mean = mean(Hillshade_9am), 
             SD = sd(Hillshade_9am))      # computing the mean and sd of hillshade index at 9 am
                                          # by cover types ( 7 X 3 dataframe)
@@ -448,7 +448,7 @@ tab<- t(tab[,2:3])                       # indexing the 2nd and 3rd column
 
 colnames(tab)<- Cover_Types              # assigning column names to matrix created above
 
-tab1<- dat %>% group_by(Cover_Type) %>%   # same procedures as above for shade index at noon
+tab1<- train_set %>% group_by(Cover_Type) %>%   # same procedures as above for shade index at noon
   summarise(Mean = mean(Hillshade_Noon), 
             SD = sd(Hillshade_Noon))
 
@@ -456,7 +456,7 @@ tab1<- t(tab1[,2:3])
 
 colnames(tab1)<- Cover_Types
 
-tab2<- dat %>% group_by(Cover_Type) %>%  # same procedures as above for shade index at 3 pm
+tab2<- train_set %>% group_by(Cover_Type) %>%  # same procedures as above for shade index at 3 pm
   summarise(Mean = mean(Hillshade_3pm), 
             SD = sd(Hillshade_3pm))
 
